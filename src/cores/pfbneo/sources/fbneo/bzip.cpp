@@ -378,7 +378,7 @@ int BzipOpen(bool bootApp) {
                 struct BurnRomInfo ri;
                 int nFind;
 
-                if (RomFind[i].nState == 1) {                    // Already found this and it's okay
+                if (RomFind[i].nState != 0) {                    // Already found this and it's okay
                     continue;
                 }
 
