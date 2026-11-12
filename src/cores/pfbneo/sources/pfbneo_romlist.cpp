@@ -21,8 +21,8 @@ void PFBNRomList::build(const ss_api::GameList::GameAddedCb &cb) {
                game->path.c_str(), game->romsPath.c_str(),
                gameInfo.system.c_str(), gameInfo.systemId, cfgSys.name.c_str(), cfgSys.id);
 #endif
-        // replace gamelist.xml name with fbneo name
-        if (!gameInfo.name.empty()) {
+        // replace gamelist.xml name with fbneo name (keep gamelist.xml name if provided, e.g. korean names)
+        if (!gameInfo.name.empty() && (game->name.empty() || game->name == game->path)) {
             game->name = gameInfo.name;
         }
 
