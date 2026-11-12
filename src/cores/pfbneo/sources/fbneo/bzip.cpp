@@ -486,7 +486,7 @@ int BzipOpen(bool bootApp) {
                 if (nBzipError & 0x10) {
                     BzipText.Add(_T("Some essential roms are different. "));
                     printf("Some essential roms are different. ");
-                    return 1;
+                    // allow patched (e.g. korean) romsets: warn only
                 }
             }
             if (nBzipError & 0x02) {
@@ -497,7 +497,7 @@ int BzipOpen(bool bootApp) {
                 if (nBzipError & 0x20) {
                     BzipText.Add(_T("Some graphics roms are different. "));
                     printf("Some graphics roms are different. ");
-                    return 1;
+                    // allow patched (e.g. korean) romsets: warn only
                 }
             }
             if (nBzipError & 0x04) {
@@ -508,7 +508,7 @@ int BzipOpen(bool bootApp) {
                 if (nBzipError & 0x40) {
                     BzipText.Add(_T("Some sound roms are different. "));
                     printf("Some sound roms are different. ");
-                    return 1;
+                    // allow patched (e.g. korean) romsets: warn only
                 }
             }
 
