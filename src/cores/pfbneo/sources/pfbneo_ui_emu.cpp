@@ -211,6 +211,11 @@ void Reinitialise(void) {
            size.x, size.y, aspect.x, aspect.y);
 }
 
+// FBNeo 2024+: drivers call ReinitialiseVideo() on resolution change
+void ReinitialiseVideo() {
+    Reinitialise();
+}
+
 void PFBAUiEmu::stop() {
     DrvExit();
     if (pBurnSoundOut) {

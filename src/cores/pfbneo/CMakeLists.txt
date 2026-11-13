@@ -166,6 +166,15 @@ set(CPU_DIRS
         ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/v60
         ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/z80
         ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/z180
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/arm9
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/h83002
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/hmcs40
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/i8085
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/mb88xx
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/psx
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/t11
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/tms57002
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/xa
 )
 file(GLOB_RECURSE SRC_CPU
         ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/*.cpp
@@ -176,6 +185,8 @@ list(REMOVE_ITEM SRC_CPU
         ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/tms34010/tms34010_newdasm.cpp
         ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/tms34010/tms34010_dasm.cpp
         ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/mips3/x64/mips3_x64.cpp
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/hmcs40/hmcs40op.cpp
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/cpu/adsp2100/2100dasm.cpp
 )
 
 if (OPTION_LIGHT)
@@ -240,6 +251,26 @@ file(GLOB SRC_7Z
 )
 
 ##############
+# chd (libchdr/lzma/zstd) - FBNeo 2024+
+##############
+set(CHD_DIRS
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/libchdr
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/libchdr/include
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/lzma
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/lzma/include
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/zstd
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/dr_libs
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/stb_vorbis
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/r8brain
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/r8brain/fft
+)
+file(GLOB SRC_CHD
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/libchdr/*.c
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/lzma/libchdr_lzma.c
+        ${CMAKE_SOURCE_DIR}/external/cores/FBNeo/src/dep/libs/zstd/zstddeclib.c
+)
+
+##############
 # pfbneo
 ##############
 set(PFBA_DIRS sources sources/fbneo)
@@ -254,6 +285,7 @@ set(INC ${PFBA_DIRS}
         ${DRV_DIRS}
         ${CPU_DIRS}
         ${INTF_DIRS}
+        ${CHD_DIRS}
         ${CMAKE_CURRENT_BINARY_DIR}/deps
 )
 
@@ -264,7 +296,7 @@ set(FLAGS
         -D__PEMU_VERSION_MINOR__=${VERSION_MINOR}
         -DLSB_FIRST
         -DINCLUDE_7Z_SUPPORT -DMINIZIP_LIB
-        -DBUILD_SDL2 -DBUILD_M68K
+        -DBUILD_SDL2 -DBUILD_M68K -DCHDR_SYSTEM_ZLIB
         #-fomit-frame-pointer
         -Wno-strict-aliasing -Wno-long-long
         -Wno-write-strings -Wno-sign-compare -Wno-uninitialized -Wno-unused
@@ -356,7 +388,7 @@ elseif (PLATFORM_ANDROID)
 endif (PLATFORM_VITA)
 
 # source files
-set(SRC ${SRC_PFBA} ${SRC_CPU} ${SRC_DRV} ${SRC_BURN} ${SRC_BURNER} ${SRC_INTF} ${SRC_7Z})
+set(SRC ${SRC_PFBA} ${SRC_CPU} ${SRC_DRV} ${SRC_BURN} ${SRC_BURNER} ${SRC_INTF} ${SRC_7Z} ${SRC_CHD})
 
 #####################
 # pfbneo executable

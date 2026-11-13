@@ -1,0 +1,1307 @@
+// Based on MAME sources by David Haywood
+// Generated with Codex AI (by DsNo)
+
+#include "tiles_generic.h"
+#include "konamiic.h"
+
+#define K056832_FLIPY	0x00002
+#define K056832_FLIPX	0x00001
+
+static UINT16 k056832Regs[0x20];
+static UINT16 k056832Regsb[0x20];
+static UINT16 *K056832VideoRAM;
+
+static UINT8 *K056832Rom;
+static UINT8 *K056832RomExp;
+static UINT8 *K056832TransTab;
+
+static INT32 K056832RomExpMask;
+static INT32 K056832ColorGranularity;
+static INT32 K056832VramWordOrder;
+static INT32 K056832Brightness;
+static INT32 K056832AlphaTileMode;
+static INT32 K056832LastAlphaTileMixCode;
+
+static INT32 m_layer_offs[8][2];
+static INT32 global_clip[4];
+
+static INT32 m_use_ext_linescroll;
+static INT32 m_layer_association;
+static INT32 m_active_layer;
+static INT32 m_layer_assoc_with_page[16];
+static INT32 m_selected_page;
+static INT32 m_selected_page_x4096;
+static INT32 m_lsram_page[8][2];
+static INT32 m_default_layer_association;
+static INT32 m_uses_tile_banks;
+static INT32 m_cur_tile_bank;
+static INT32 m_layer_tile_mode[8];
+static INT32 m_page_tile_mode[16];
+static INT32 m_num_gfx_banks;
+static INT32 m_cur_gfx_banks;
+static INT32 tilemap_flip;
+static INT32 m_rom_half;
+static INT32 K056832_metamorphic_textfix = 0;
+static INT32 K056832_Linemap_Enabled = 0;
+static UINT32 *linemap_bitmap = NULL;
+static UINT8 *linemap_primap = NULL;
+
+#define CLIP_MINX	global_clip[0]
+#define CLIP_MAXX	global_clip[1]
+#define CLIP_MINY	global_clip[2]
+#define CLIP_MAXY	global_clip[3]
+
+static void (*m_callback)(INT32 layer, INT32 *code, INT32 *color, INT32 *flags);
+static UINT32 (*m_alpha_tile_callback)(INT32 layer, INT32 code, INT32 color, INT32 pixel, INT32 x, INT32 y, INT32 *alpha, UINT32 rgb);
+
+void K056832SetAlphaTileCallback(UINT32 (*Callback)(INT32 layer, INT32 code, INT32 color, INT32 pixel, INT32 x, INT32 y, INT32 *alpha, UINT32 rgb))
+{
+	m_alpha_tile_callback = Callback;
+}
+
+static void k056832_sync_tile_modes()
+{
+	UINT16 data = BURN_ENDIAN_SWAP_INT16(k056832Regs[0x08 / 2]);
+
+	for (INT32 layer = 0; layer < 4; layer++) {
+		m_layer_tile_mode[layer] = data & (1 << layer);
+	}
+}
+
+UINT16 K056832GetVram(INT32 address)
+{
+	return K056832VideoRAM[address];
+}
+
+void K056832SetVram(INT32 address, UINT16 data)
+{
+	K056832VideoRAM[address] = data;
+}
+
+void K056832Reset()
+{
+	memset (K056832VideoRAM, 0, 0x2000 * 0x11 * 2);
+
+	for (INT32 i = 0; i < 0x20; i++) {
+		k056832Regs[i] = 0;
+		k056832Regsb[i] = 0;
+	}
+
+	m_cur_gfx_banks = 0;
+	m_uses_tile_banks = 0;
+	m_cur_tile_bank = 0;
+	m_active_layer = 0;
+	tilemap_flip = 0;
+	m_rom_half = 0;
+	m_selected_page = 0;
+	m_selected_page_x4096 = 0;
+	for (INT32 i = 0; i < 8; i++) {
+		m_layer_tile_mode[i] = 1;
+	}
+	for (INT32 i = 0; i < 16; i++) {
+		m_layer_assoc_with_page[i] = -1;
+		m_page_tile_mode[i] = 1;
+	}
+}
+
+static void CalculateTranstab()
+{
+	INT32 explen = (K056832RomExpMask + 1);
+
+	K056832TransTab = (UINT8*)BurnMalloc(explen);
+
+	memset (K056832TransTab, 1, explen);
+
+	for (INT32 i = 0; i < explen*0x40; i+= 0x40) {
+		for (INT32 j = 0; j < 0x40; j++) {
+			if (K056832RomExp[i+j]) {
+				K056832TransTab[i/0x40] = 0;
+				break;
+			}
+		}
+	}
+}
+
+void K056832Init(UINT8 *rom, UINT8 *romexp, INT32 rom_size, void (*cb)(INT32 layer, INT32 *code, INT32 *color, INT32 *flags))
+{
+	KonamiIC_K056832InUse = 1;
+
+	for (INT32 i = 0; i < 8; i++) {
+		m_layer_offs[i][0] = m_layer_offs[i][1] = 0;
+		m_lsram_page[i][0] = i;
+		m_lsram_page[i][1] = i << 11;
+		m_layer_tile_mode[i] = 1;
+	}
+
+	for (INT32 i = 0; i < 16; i++) {
+		m_page_tile_mode[i] = 1;
+	}
+
+	K056832SetGlobalOffsets(0, 0);
+
+	KonamiAllocateBitmaps();
+
+	m_callback = cb;
+
+	K056832Rom = rom;
+	K056832RomExp = romexp;
+	K056832RomExpMask = ((rom_size * 2) / 0x40) - 1;
+	K056832ColorGranularity = 16;
+	K056832VramWordOrder = 0;
+	K056832Brightness = 0xff;
+	K056832AlphaTileMode = 0;
+	K056832LastAlphaTileMixCode = 0;
+	m_alpha_tile_callback = NULL;
+	m_num_gfx_banks = rom_size / 0x2000;
+
+	CalculateTranstab();
+
+	m_use_ext_linescroll = 0;	// enable later, no reset.
+	m_default_layer_association = 1;
+	m_layer_association = m_default_layer_association;
+
+	K056832VideoRAM = (UINT16*)BurnMalloc(0x2000 * 0x11 * 2);
+
+	K056832Reset();
+}
+
+void K056832SetRomExpTileCount(INT32 tiles)
+{
+	if (tiles <= 0) return;
+
+	BurnFree(K056832TransTab);
+
+	K056832RomExpMask = tiles - 1;
+
+	CalculateTranstab();
+}
+
+void K056832SetColorGranularity(INT32 colors)
+{
+	if (colors > 0) K056832ColorGranularity = colors;
+}
+
+void K056832SetVramWordOrder(INT32 swapped)
+{
+	K056832VramWordOrder = swapped ? 1 : 0;
+}
+
+void K056832SetBrightness(INT32 brightness)
+{
+	K056832Brightness = brightness & 0xff;
+}
+
+static inline UINT32 K056832ApplyBrightness(UINT32 color)
+{
+	if (K056832Brightness >= 0xff) return color;
+
+	UINT32 r = ((color >> 16) & 0xff) * K056832Brightness / 0xff;
+	UINT32 g = ((color >>  8) & 0xff) * K056832Brightness / 0xff;
+	UINT32 b = ((color >>  0) & 0xff) * K056832Brightness / 0xff;
+
+	return (r << 16) | (g << 8) | b;
+}
+
+static inline UINT32 K056832VramWordOffset(UINT32 offset)
+{
+	return offset & 0x0fff;
+}
+
+void K056832Exit()
+{
+	BurnFree (K056832VideoRAM);
+	BurnFree (K056832TransTab);
+
+	K056832_metamorphic_textfix = 0;
+
+	if (K056832_Linemap_Enabled) {
+		BurnFree(linemap_bitmap);
+		BurnFree(linemap_primap);
+		K056832_Linemap_Enabled = 0;
+	}
+
+	m_callback = NULL;
+}
+
+void K056832SetLayerAssociation(INT32 status)
+{
+	m_layer_association = m_default_layer_association = status;
+}
+
+void K056832SetRomBankCount(INT32 banks)
+{
+	if (banks > 0) m_num_gfx_banks = banks;
+}
+
+void K056832SetGlobalOffsets(INT32 minx, INT32 miny)
+{
+	CLIP_MINX = (minx < 0) ? 0 : minx;
+	CLIP_MAXX = CLIP_MINX + nScreenWidth;
+	CLIP_MINY = (miny < 0) ? 0 : miny;
+	CLIP_MAXY = CLIP_MINY + nScreenHeight;
+}
+
+void K056832SetLayerOffsets(INT32 layer, INT32 xoffs, INT32 yoffs)
+{
+	m_layer_offs[layer & 3][0] = xoffs;
+	m_layer_offs[layer & 3][1] = yoffs;
+}
+
+void K056832SetAlphaTileMode(INT32 enable)
+{
+	K056832AlphaTileMode = enable;
+}
+
+INT32 K056832GetLastAlphaTileMixCode()
+{
+	return K056832LastAlphaTileMixCode & 3;
+}
+
+void K056832SetExtLinescroll()
+{
+	m_use_ext_linescroll = 1;
+}
+
+INT32 K056832IsIrqEnabled()
+{
+	return BURN_ENDIAN_SWAP_INT16(k056832Regs[3]) & 1;
+}
+
+void K056832ReadAvac(INT32 *mode, INT32 *data)
+{
+	*mode = BURN_ENDIAN_SWAP_INT16(k056832Regs[0x04/2]) & 7;
+	*data = BURN_ENDIAN_SWAP_INT16(k056832Regs[0x38/2]);
+}
+
+UINT16 K056832ReadRegister(INT32 reg)
+{
+	return BURN_ENDIAN_SWAP_INT16(k056832Regs[reg & 0x1f]);
+}
+
+INT32 K056832GetLookup( INT32 bits )
+{
+	INT32 res;
+
+	res = (BURN_ENDIAN_SWAP_INT16(k056832Regs[0x1c]) >> (bits << 2)) & 0x0f;
+
+	if (m_uses_tile_banks)   /* Asterix */
+		res |= m_cur_tile_bank << 4;
+
+	return res;
+}
+
+static void mark_all_tilemaps_dirty()
+{ // this sets the page/layer associations.
+	for (INT32 i = 0; i < 16; i++)
+	{
+		if (m_layer_assoc_with_page[i] != -1)
+		{
+			m_page_tile_mode[i] = m_layer_tile_mode[m_layer_assoc_with_page[i]];
+		}
+	}
+}
+
+static void k056832_change_rambank()
+{
+	INT32 bank = BURN_ENDIAN_SWAP_INT16(k056832Regs[0x19]);
+
+	if (BURN_ENDIAN_SWAP_INT16(k056832Regs[0]) & 0x02)    // external linescroll enable
+		m_selected_page = 16;
+	else
+		m_selected_page = ((bank >> 1) & 0xc) | (bank & 3);
+
+	m_selected_page_x4096 = m_selected_page << 12;
+
+	mark_all_tilemaps_dirty();
+}
+
+static void k056832_change_rombank()
+{
+	INT32 bank;
+
+	if (m_uses_tile_banks)   /* Asterix */
+		bank = (BURN_ENDIAN_SWAP_INT16(k056832Regs[0x1a]) >> 8) | (BURN_ENDIAN_SWAP_INT16(k056832Regs[0x1b]) << 4) | (m_cur_tile_bank << 6);
+	else
+		bank = BURN_ENDIAN_SWAP_INT16(k056832Regs[0x1a]) | (BURN_ENDIAN_SWAP_INT16(k056832Regs[0x1b]) << 16);
+
+	m_cur_gfx_banks = bank % m_num_gfx_banks;
+}
+
+void K056832SetTileBank(INT32 bank)
+{
+	m_uses_tile_banks = 1;
+
+	m_cur_tile_bank = bank;
+
+	k056832_change_rombank();
+}
+
+static void k056832_update_page_layout()
+{
+	m_layer_association = m_default_layer_association;
+
+	INT32 m_y[4] = { 0, 0, 0, 0 };	// not sure why initializing these is necessary
+	INT32 m_x[4] = { 0, 0, 0, 0 };	// as they should be all set below, but it causes
+	INT32 m_h[4] = { 0, 0, 0, 0 };	// a hang in monster maulers otherswise. -iq
+	INT32 m_w[4] = { 0, 0, 0, 0 };
+
+	for (INT32 layer = 0; layer < 4; layer++)
+	{
+		UINT16 yreg = BURN_ENDIAN_SWAP_INT16(k056832Regs[(0x10 / 2) + layer]);
+		UINT16 xreg = BURN_ENDIAN_SWAP_INT16(k056832Regs[(0x18 / 2) + layer]);
+
+		m_y[layer] = (yreg & 0x18) >> 3;
+		m_x[layer] = (xreg & 0x18) >> 3;
+		m_h[layer] = (yreg & 0x03) >> 0;
+		m_w[layer] = (xreg & 0x03) >> 0;
+
+		if (!m_y[layer] && !m_x[layer] && m_h[layer] == 3 && m_w[layer] == 3)
+		{
+			m_layer_association = 0;
+			break;
+		}
+	}
+
+	// disable all tilemaps
+	for (INT32 page_idx = 0; page_idx < 16; page_idx++)
+	{
+		m_layer_assoc_with_page[page_idx] = -1;
+	}
+
+	// enable associated tilemaps
+	for (INT32 layer = 0; layer < 4; layer++)
+	{
+		INT32 rowstart = m_y[layer];
+		INT32 colstart = m_x[layer];
+		INT32 rowspan  = m_h[layer] + 1;
+		INT32 colspan  = m_w[layer] + 1;
+
+		INT32 setlayer = (m_layer_association) ? layer : m_active_layer;
+
+		for (INT32 r = 0; r < rowspan; r++)
+		{
+			for (INT32 c = 0; c < colspan; c++)
+			{
+				INT32 page_idx = (((rowstart + r) & 3) << 2) + ((colstart + c) & 3);
+				m_layer_assoc_with_page[page_idx] = setlayer;
+			}
+		}
+	}
+
+	mark_all_tilemaps_dirty();
+}
+
+static void k056832_word_write_update(INT32 offset, UINT16 old_data) // (offset/2)&0x1f internally
+{
+	offset = (offset / 2) & 0x1f;
+
+	UINT16 data = BURN_ENDIAN_SWAP_INT16(k056832Regs[offset]);
+
+	if (offset >= 0x10/2 && offset <= 0x1e/2)
+	{
+		m_active_layer = offset & 3;
+		k056832_update_page_layout();
+		return;
+	}
+
+	switch (offset)
+	{
+		case 0x00/2:
+			tilemap_flip = 0;
+			if (data & 0x20) tilemap_flip |= K056832_FLIPY;
+			if (data & 0x10) tilemap_flip |= K056832_FLIPX;
+			k056832_change_rambank();
+		break;
+
+		case 0x08/2:
+			for (INT32 layer = 0; layer < 4; layer++) {
+				INT32 mask = 1 << layer;
+				INT32 tilemode = data & mask;
+
+				if (tilemode == (old_data & mask)) continue;
+
+				m_layer_tile_mode[layer] = tilemode;
+
+				for (INT32 i = 0; i < 16; i++)
+				{
+					if (m_layer_assoc_with_page[i] == layer)
+					{
+						m_page_tile_mode[i] = tilemode;
+						//mark_page_dirty(i);
+					}
+				}
+			}
+		break;
+
+		case 0x32/2:
+			k056832_change_rambank();
+		break;
+
+		case 0x34/2:
+		case 0x36/2:
+			k056832_change_rombank();
+		break;
+	}
+}
+
+void K056832WordWrite(INT32 offset, UINT16 data)
+{
+	INT32 reg = (offset / 2) & 0x1f;
+	UINT16 old_data = BURN_ENDIAN_SWAP_INT16(k056832Regs[reg]);
+	k056832Regs[reg] = BURN_ENDIAN_SWAP_INT16(data);
+	k056832_word_write_update(offset, old_data);
+}
+
+void K056832ByteWrite(INT32 offset, UINT8 data)
+{
+	INT32 reg = (offset / 2) & 0x1f;
+	UINT16 old_data = BURN_ENDIAN_SWAP_INT16(k056832Regs[reg]);
+	UINT8 *regs = (UINT8*)&k056832Regs;
+	regs[(offset & 0x3f) ^ 1] = data;
+
+	k056832_word_write_update(offset, old_data);
+}
+
+UINT16 K056832RomWordRead(UINT16 offset)
+{
+	offset &= 0x1ffe;
+
+	INT32 addr = 0x2000 * m_cur_gfx_banks + offset;
+
+	return K056832Rom[addr+1] | (K056832Rom[addr] << 8);
+}
+
+void K056832HalfRamWriteWord(UINT32 offset, UINT16 data)
+{
+	K056832VideoRAM[m_selected_page_x4096 + (offset & 0xffe) + 1] = BURN_ENDIAN_SWAP_INT16(data);
+}
+
+void K056832HalfRamWriteByte(UINT32 offset, UINT8 data)
+{
+	UINT8 *ram = (UINT8*)(K056832VideoRAM + (m_selected_page_x4096 + (offset & 0xffe) + 1));
+
+	ram[(offset & 1) ^ 1] = data;
+}
+
+UINT16 K056832HalfRamReadWord(UINT32 offset)
+{
+	return BURN_ENDIAN_SWAP_INT16(K056832VideoRAM[m_selected_page_x4096 + (offset & 0xffe) + (((offset >> 12) ^ 1) & 1)]);
+}
+
+UINT8 K056832HalfRamReadByte(UINT32 offset)
+{
+	UINT8 *ram = (UINT8*)(K056832VideoRAM + m_selected_page_x4096 + ((offset & 0xffe) + (((offset >> 12) ^ 1) & 1)));
+	return ram[(offset & 1) ^ 1];
+}
+
+void K056832RamWriteWord(UINT32 offset, UINT16 data)
+{
+	offset = K056832VramWordOffset((offset & 0x1fff) / 2);
+	K056832VideoRAM[m_selected_page_x4096 + (offset)] = BURN_ENDIAN_SWAP_INT16(data);
+}
+
+void K056832RamWriteWordMask(UINT32 offset, UINT16 data, UINT16 mem_mask)
+{
+	offset = K056832VramWordOffset((offset & 0x1fff) / 2);
+
+	UINT16 word = BURN_ENDIAN_SWAP_INT16(K056832VideoRAM[m_selected_page_x4096 + offset]);
+	word = (word & ~mem_mask) | (data & mem_mask);
+	K056832VideoRAM[m_selected_page_x4096 + offset] = BURN_ENDIAN_SWAP_INT16(word);
+}
+
+void K056832RamWriteByte(UINT32 offset, UINT8 data)
+{
+	UINT32 wordoffs = K056832VramWordOffset((offset & 0x1fff) >> 1);
+	UINT16 word = BURN_ENDIAN_SWAP_INT16(K056832VideoRAM[m_selected_page_x4096 + wordoffs]);
+
+	if (offset & 1) {
+		word = (word & 0xff00) | data;
+	} else {
+		word = (word & 0x00ff) | (data << 8);
+	}
+
+	K056832VideoRAM[m_selected_page_x4096 + wordoffs] = BURN_ENDIAN_SWAP_INT16(word);
+}
+
+UINT16 K056832RamReadWord(UINT32 offset)
+{
+	m_rom_half = 0;
+
+	return BURN_ENDIAN_SWAP_INT16(K056832VideoRAM[m_selected_page_x4096 + K056832VramWordOffset((offset & 0x1fff) / 2)]);
+}
+
+UINT8 K056832RamReadByte(UINT32 offset)
+{
+	UINT16 word = BURN_ENDIAN_SWAP_INT16(K056832VideoRAM[m_selected_page_x4096 + K056832VramWordOffset((offset & 0x1fff) >> 1)]);
+
+	m_rom_half = 0;
+
+	return (offset & 1) ? (word & 0xff) : (word >> 8);
+}
+
+UINT16 K056832RomWord8000Read(INT32 offset)
+{
+	int addr = 0x8000 * m_cur_gfx_banks + (offset & 0x7ffe);
+
+	return K056832Rom[addr + 2] | (K056832Rom[addr] << 8);
+}
+
+void K056832WritebRegsWord(INT32 offset, UINT16 data)
+{
+	k056832Regsb[(offset & 0x1f)/2] = BURN_ENDIAN_SWAP_INT16(data);
+}
+
+void K056832WritebRegsByte(INT32 offset, UINT8 data)
+{
+	UINT8 *regs = (UINT8*)&k056832Regsb;
+
+	regs[offset & 0x1f] = data;
+}
+
+UINT16 K056832mwRomWordRead(INT32 address)
+{
+	INT32 offset = (address / 2) & 0x1fff;
+	INT32 bank = (0x800 * m_cur_gfx_banks) * 5;
+
+	if (BURN_ENDIAN_SWAP_INT16(k056832Regsb[0x02]) & 0x08)
+	{
+		UINT16 temp = K056832Rom[((offset / 4) * 5) + 4 + bank];
+
+		switch (offset & 3)
+		{
+			case 0:	return ((temp & 0x80) <<  5) | ((temp & 0x40) >> 2);
+			case 1:	return ((temp & 0x20) <<  7) | ((temp & 0x10) >> 0);
+			case 2: return ((temp & 0x08) <<  9) | ((temp & 0x04) << 2);
+			case 3: return ((temp & 0x02) << 11) | ((temp & 0x01) << 4);
+		}
+	}
+	else
+	{
+		INT32 addr = ((offset >> 1) * 5) + ((offset & 1) * 2) + bank;
+
+		return K056832Rom[addr + 1] | (K056832Rom[addr] << 8);
+	}
+
+	return 0;
+}
+
+UINT8 K056832GxRomByteRead(INT32 address)
+{
+	INT32 offset = (address & 0x1fff) + (m_cur_gfx_banks * 0x2000);
+	INT32 base = (offset / 4) * 5 + ((offset & 3) * 2);
+
+	if (m_rom_half && ((address & 3) == 3)) {
+		return 0;
+	}
+
+	if (m_rom_half) {
+		return K056832Rom[base + 1];
+	}
+
+	m_rom_half = 1;
+
+	return K056832Rom[base];
+}
+
+UINT8 K056832GxRomByteRead6bpp(INT32 address)
+{
+	INT32 offset = (address & 0x1fff) + (m_cur_gfx_banks * 0x2000);
+	INT32 base = (offset / 4) * 6 + ((offset & 3) * 2);
+
+	if (m_rom_half) {
+		return K056832Rom[base + 1];
+	}
+
+	m_rom_half = 1;
+
+	return K056832Rom[base];
+}
+
+
+static inline UINT32 alpha_blend(UINT32 d, UINT32 s, UINT32 p)
+{
+	if (p == 0) return d;
+
+	INT32 a = 256 - p;
+
+	return (((((s & 0xff00ff) * p) + ((d & 0xff00ff) * a)) & 0xff00ff00) |
+		((((s & 0x00ff00) * p) + ((d & 0x00ff00) * a)) & 0x00ff0000)) >> 8;
+}
+
+// additive blend: dst += src * p/256, clamped per channel. Used for K054338
+// "additive mode" tile layers (e.g. sexyparo's faint blue glow overlay) which only
+// add light - they never darken the picture the way an alpha-over blend can.
+static inline UINT32 additive_blend(UINT32 d, UINT32 s, UINT32 p)
+{
+	if (p == 0) return d;
+
+	UINT32 r = ((d >> 16) & 0xff) + ((((s >> 16) & 0xff) * p) >> 8);
+	UINT32 g = ((d >>  8) & 0xff) + ((((s >>  8) & 0xff) * p) >> 8);
+	UINT32 b = ((d >>  0) & 0xff) + ((((s >>  0) & 0xff) * p) >> 8);
+
+	if (r > 0xff) r = 0xff;
+	if (g > 0xff) g = 0xff;
+	if (b > 0xff) b = 0xff;
+
+	return (r << 16) | (g << 8) | b;
+}
+
+static void draw_layer_internal(INT32 layer, INT32 pageIndex, INT32 *clip, INT32 scrollx, INT32 scrolly, INT32 flags, INT32 priority, INT32 linemap_mode)
+{
+	static const struct K056832_SHIFTMASKS
+	{
+		INT32 flips, palm1, pals2, palm2;
+	}
+	k056832_shiftmasks[4] = {{6, 0x3f, 0, 0x00}, {4, 0x0f, 2, 0x30}, {2, 0x03, 2, 0x3c}, {0, 0x00, 2, 0x3f}};
+	const struct K056832_SHIFTMASKS *smptr;
+
+	scrollx &= 0x1ff;
+	scrolly &= 0xff;
+
+	INT32 minx = clip[0];
+	INT32 maxx = clip[1];
+	INT32 miny = clip[2];
+	INT32 maxy = clip[3];
+
+	INT32 alpha_enable = flags & K056832_LAYER_ALPHA;
+	INT32 alpha = (flags >> 8) & 0xff;
+	INT32 alpha_additive = flags & K056832_LAYER_ADDITIVE;
+	INT32 opaque = flags & K056832_LAYER_OPAQUE;
+
+	if (alpha == 255 && !alpha_additive) alpha_enable = 0;
+
+	if (linemap_mode)
+	{
+		for (INT32 y = 0; y < nScreenHeight; y++)
+			for (INT32 x = 0; x < nScreenWidth; x++)
+			{
+				INT32 sx = (x + scrollx + CLIP_MINX) & 0x1ff;
+				INT32 sy = (y + scrolly + CLIP_MINY) & 0xff;
+
+				if (x < (minx - CLIP_MINX) || x > (maxx - CLIP_MINX)) continue;
+				if (y < (miny - CLIP_MINY) || y > (maxy - CLIP_MINY)) continue;
+
+				UINT32   *src = linemap_bitmap + (sy * 512);
+				UINT8 *srcpri = linemap_primap + (sy * 512);
+
+				UINT32 *dst = konami_bitmap32 + (y * nScreenWidth);
+				UINT8  *pri = konami_priority_bitmap + (y * nScreenWidth);
+
+				if (src[sx]) {
+					dst[x] = src[sx];
+					pri[x] = srcpri[sx];
+				}
+
+			}
+
+		return;
+	}
+
+
+	for (INT32 offs = 0; offs < 64 * 32; offs++)
+	{
+		INT32 sx = (offs & 0x3f) * 8;
+		INT32 sy = (offs / 0x40) * 8; // sy handling in blitter (down below...)
+
+		sx -= scrollx;
+		if (sx < -7) sx += 512;
+		if (tilemap_flip & 1) sx = (512 - 8) - sx;
+		if (sx < (minx-7) || sx > maxx) continue;
+
+		{ // speed-up
+			// y is calculated in the tile blitter (see "// blitter" below)
+			// but we need to check clipping here in order to not need 8ghz to
+			// do linescrolling. (see: martial champ., 2nd attract game)
+			// in order to clip, we need to pre-calculate y+top and bottom of
+			// the tile here.
+			//
+			// TOCHECK:  (if anything here is changed!)
+			//   Xexex level 4, watch the top and bottom of the screen while
+			// scrolling up and down in the level.
+			//   Martial Champ., 2nd attract-mode game - watch cpu usage.
+			INT32 syyh;
+			INT32 syyl;
+			if (tilemap_flip & 2) {
+				syyh= (256 - 8) - (sy - 7);
+				syyh= (syyh + scrolly) & 0xff;
+
+				syyl= (256 - 8) - (sy - 0);
+				syyl= (syyl + scrolly) & 0xff;
+			} else {
+				syyh = ((sy + 7) - scrolly) & 0xff;
+				syyl = ((sy + 0) - scrolly) & 0xff;
+			}
+
+			if ( (syyh < (miny-7) || syyh > (maxy+7)) && (syyl < (miny-7) || syyl > (maxy+7)) ) continue;
+		}
+
+		UINT16 *pMem = &K056832VideoRAM[(pageIndex << 12) + (offs << 1)];
+
+		INT32 attr  = BURN_ENDIAN_SWAP_INT16(pMem[0]);
+		INT32 code  = BURN_ENDIAN_SWAP_INT16(pMem[1]);
+		if (m_layer_association)
+		{
+			layer = m_layer_assoc_with_page[pageIndex];
+			if (layer == -1)
+				layer = 0;  // use layer 0's palette info for unmapped pages
+		}
+		else
+			layer = m_active_layer;
+
+		INT32 fbits = (BURN_ENDIAN_SWAP_INT16(k056832Regs[3]) >> 6) & 3;
+		INT32 flip  = (BURN_ENDIAN_SWAP_INT16(k056832Regs[1]) >> (layer << 1)) & 0x3; // tile-flip override (see p.20 3.2.2 "REG2")
+		smptr = &k056832_shiftmasks[fbits];
+
+		flip &= (attr >> smptr->flips) & 3;
+		INT32 color = (attr & smptr->palm1) | (attr >> smptr->pals2 & smptr->palm2);
+		INT32 g_flags = flip & 3;
+		INT32 mix_code = (K056832AlphaTileMode == 2) ? ((attr >> 4) & 3) : ((attr >> 6) & 3);
+		INT32 category = (K056832AlphaTileMode && mix_code) ? 1 : 0;
+		if (category) {
+			K056832LastAlphaTileMixCode = mix_code;
+		}
+
+		m_callback(layer, &code, &color, &g_flags);
+
+		if ((flags & K056832_DRAW_CATEGORY_1) && !category) continue;
+		if (!(flags & (K056832_DRAW_CATEGORY_1 | K056832_DRAW_ALL_CATEGORIES)) && category) continue;
+
+		// hack - mystic warriors' water level - iq
+		if (g_flags & 0x8000) {
+			alpha_enable = 1;
+			alpha = (g_flags >> 16) & 0xff;
+		}
+
+	//	code &= K056832RomExpMask; // mask in callback if necessary
+
+		if (!opaque) {
+			if (K056832TransTab[code]) continue;
+		}
+
+		{
+			if (tilemap_flip & 1) g_flags ^= 1;
+			if (tilemap_flip & 2) g_flags ^= 2;
+
+			UINT8 *rom = K056832RomExp + (code * 0x40);
+			INT32 palette_colors = 0x2000 / K056832ColorGranularity;
+			UINT32 *pal = konami_palette32 + ((color % palette_colors) * K056832ColorGranularity);
+
+			INT32 flip_tile = 0;
+			if (g_flags & 0x01) flip_tile |= 0x07;
+			if (g_flags & 0x02) flip_tile |= 0x38;
+
+			{ // blitter
+				for (INT32 iy = 0; iy < 8; iy++) {
+					INT32 yy = sy + iy;
+
+					if (tilemap_flip & 2) {
+						yy = (256 - 8) - (sy - iy);
+						yy = (yy + scrolly) & 0xff;
+					} else {
+						yy = (yy - scrolly) & 0xff;
+					}
+
+					UINT32 *dst = konami_bitmap32 + ((yy - CLIP_MINY) * nScreenWidth) - CLIP_MINX;
+					UINT8 *pri = konami_priority_bitmap + ((yy - CLIP_MINY) * nScreenWidth) - CLIP_MINX;
+
+					if (yy < miny || yy > maxy) continue;
+
+					for (INT32 ix = 0; ix < 8; ix++) {
+						INT32 xx = sx+ix;
+
+						if (xx < minx || xx > maxx) continue;
+
+						INT32 pxl = rom[((iy*8)+ix)^flip_tile];
+
+						if (pxl || opaque) {
+							if (alpha_enable) {
+								INT32 pixel_alpha = alpha;
+								UINT32 src = K056832ApplyBrightness(pal[pxl]);
+
+								if (m_alpha_tile_callback) {
+									src = m_alpha_tile_callback(layer, code, color, pxl, xx, yy, &pixel_alpha, src);
+								}
+
+								if (alpha_additive)
+									dst[xx] = additive_blend(dst[xx], K056832ApplyBrightness(pal[pxl]), alpha);
+								else
+									dst[xx] = alpha_blend(dst[xx], K056832ApplyBrightness(pal[pxl]), alpha);
+							} else {
+								UINT32 src = K056832ApplyBrightness(pal[pxl]);
+
+								if (category && m_alpha_tile_callback) {
+									INT32 pixel_alpha = 64;
+									UINT32 adjusted = m_alpha_tile_callback(layer, code, color, pxl, xx, yy, &pixel_alpha, src);
+
+									if (adjusted != src) {
+										dst[xx] = alpha_blend(dst[xx], adjusted, pixel_alpha);
+									} else {
+										dst[xx] = src;
+									}
+								} else {
+									dst[xx] = src;
+								}
+							}
+							pri[xx] = priority;
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+void K056832SetLinemap()
+{
+	K056832_Linemap_Enabled = 1;
+	linemap_bitmap = (UINT32*)BurnMalloc(512 * 256 * sizeof(UINT32));
+	linemap_primap = (UINT8 *)BurnMalloc(512 * 256 * sizeof(UINT8));
+}
+
+static int update_linemap(INT32 layer, INT32 pageIndex, INT32 flags, INT32 priority)
+{
+	static const struct K056832_SHIFTMASKS
+	{
+		INT32 flips, palm1, pals2, palm2;
+	}
+	k056832_shiftmasks[4] = {{6, 0x3f, 0, 0x00}, {4, 0x0f, 2, 0x30}, {2, 0x03, 2, 0x3c}, {0, 0x00, 2, 0x3f}};
+	const struct K056832_SHIFTMASKS *smptr;
+
+	if (m_layer_assoc_with_page[pageIndex] >= 0) {
+		m_page_tile_mode[pageIndex] = m_layer_tile_mode[m_layer_assoc_with_page[pageIndex]];
+	}
+
+	if (m_page_tile_mode[pageIndex]) return 0; // this is a tilemap, not a linemap!
+	if (!K056832_Linemap_Enabled) return 1; // linemap not enabled? ignore this page.
+
+	UINT32 *dst = linemap_bitmap;
+	UINT8  *pri = linemap_primap;
+
+	for (INT32 line = 0; line < 256; line++)
+	{
+		UINT16 *pMem = &K056832VideoRAM[(pageIndex << 12) + (line << 1)];
+
+		INT32 attr  = BURN_ENDIAN_SWAP_INT16(pMem[0]);
+		INT32 code  = BURN_ENDIAN_SWAP_INT16(pMem[1]);
+		if (m_layer_association)
+		{
+			layer = m_layer_assoc_with_page[pageIndex];
+			if (layer == -1)
+				layer = 0;  // use layer 0's palette info for unmapped pages
+		}
+		else
+			layer = m_active_layer;
+
+		INT32 fbits = (BURN_ENDIAN_SWAP_INT16(k056832Regs[3]) >> 6) & 3;
+		INT32 flip  = (BURN_ENDIAN_SWAP_INT16(k056832Regs[1]) >> (layer << 1)) & 0x3; // tile-flip override (see p.20 3.2.2 "REG2")
+		smptr = &k056832_shiftmasks[fbits];
+
+		flip &= (attr >> smptr->flips) & 3;
+		INT32 color = (attr & smptr->palm1) | (attr >> smptr->pals2 & smptr->palm2);
+		INT32 g_flags = flip & 3;
+
+		m_callback(layer, &code, &color, &g_flags);
+
+		INT32 palette_colors = 0x2000 / K056832ColorGranularity;
+		UINT32 *pal = konami_palette32 + ((color % palette_colors) * K056832ColorGranularity);
+
+		for (INT32 x = 0; x < 512; x += 8)
+		{
+			UINT8 *pix = K056832RomExp + ((((code & ~7) | (x >> 6)) * 0x40) + (x & 0x3f));
+
+			for (INT32 p = 0; p < 8; p++) {
+				INT32 pixel = pix[p];
+
+				if (pixel) {
+					dst[x + p] = K056832ApplyBrightness(pal[pixel]);
+					pri[x + p] = priority;
+				} else {
+					dst[x + p] = 0;
+					pri[x + p] = 0;
+				}
+			}
+		}
+
+		dst += 512;
+		pri += 512;
+	}
+
+	return 0;
+}
+
+#define K056832_PAGE_COLS 64
+#define K056832_PAGE_ROWS 32
+#define K056832_PAGE_HEIGHT (K056832_PAGE_ROWS*8)
+#define K056832_PAGE_WIDTH  (K056832_PAGE_COLS*8)
+
+#define K056832_PAGE_COUNT 16
+
+void K056832Draw(INT32 layer, UINT32 flags, UINT32 priority)
+{
+	UINT16 *m_videoram = K056832VideoRAM;
+	UINT16 *m_regs = k056832Regs;
+
+	UINT32 last_dx, last_visible, last_active;
+	INT32 sx, sy, ay, tx, ty, width, height;
+	INT32 clipw, clipx, cliph, clipy, clipmaxy;
+	INT32 line_height, line_endy, line_starty, line_y;
+	INT32 sdat_start, sdat_walk, sdat_adv, sdat_wrapmask, sdat_offs;
+	INT32 pageIndex, flipx, flipy, corr, r, c;
+	INT32 cminy, cmaxy, cminx, cmaxx;
+	INT32 dminy, dmaxy, dminx, dmaxx;
+	UINT16 *p_scroll_data;
+	UINT16 ram16[2];
+	INT32 tmap;
+
+	INT32 tmap_scrollx=0,tmap_scrolly=0;
+	INT32 clip_data[4] = {0, 0, 0, 0}; // minx, maxx, miny, maxy
+
+	UINT16 yreg = BURN_ENDIAN_SWAP_INT16(m_regs[(0x10 / 2) + layer]);
+	UINT16 xreg = BURN_ENDIAN_SWAP_INT16(m_regs[(0x18 / 2) + layer]);
+
+	INT32 rowstart = (yreg & 0x18) >> 3;
+	INT32 colstart = (xreg & 0x18) >> 3;
+	INT32 rowspan  = ((yreg & 0x03) >> 0) + 1;
+	INT32 colspan  = ((xreg & 0x03) >> 0) + 1;
+	INT32 dy = (INT16)BURN_ENDIAN_SWAP_INT16(m_regs[(0x20 / 2) + layer]);
+	INT32 dx = (INT16)BURN_ENDIAN_SWAP_INT16(m_regs[(0x28 / 2) + layer]);
+	INT32 scrollbank = ((BURN_ENDIAN_SWAP_INT16(m_regs[0x30 / 2]) >> 1) & 0xc) | (BURN_ENDIAN_SWAP_INT16(m_regs[0x30 / 2]) & 3);
+	INT32 scrollmode = BURN_ENDIAN_SWAP_INT16(m_regs[0x0a / 2]) >> (m_lsram_page[layer][0] << 1) & 3;
+
+	if (m_use_ext_linescroll)
+	{
+		scrollbank = K056832_PAGE_COUNT;
+	}
+
+	height = rowspan * K056832_PAGE_HEIGHT;
+	width  = colspan * K056832_PAGE_WIDTH;
+
+	cminx = CLIP_MINX;
+	cmaxx = CLIP_MAXX - 1;
+	cminy = CLIP_MINY;
+	cmaxy = CLIP_MAXY - 1;
+
+	// flip correction registers
+	flipy = BURN_ENDIAN_SWAP_INT16(m_regs[0]) & 0x20;
+	if (flipy)
+	{
+		corr = BURN_ENDIAN_SWAP_INT16(m_regs[0x3c/2]);
+		if (corr & 0x400)
+			corr |= 0xfffff800;
+	}
+	else
+		corr = 0;
+
+	dy += corr;
+	ay = (UINT32)(dy - m_layer_offs[layer][1]) % height;
+
+	flipx = BURN_ENDIAN_SWAP_INT16(m_regs[0]) & 0x10;
+	if (flipx)
+	{
+		corr = BURN_ENDIAN_SWAP_INT16(m_regs[0x3a/2]);
+		if (corr & 0x800)
+			corr |= 0xfffff000;
+	}
+	else
+		corr = 0;
+
+	corr -= m_layer_offs[layer][0];
+
+	if (scrollmode == 0 && (flags & K056382_DRAW_FLAG_FORCE_XYSCROLL))
+	{
+		scrollmode = 3;
+		flags &= ~K056382_DRAW_FLAG_FORCE_XYSCROLL;
+	}
+
+	switch( scrollmode )
+	{
+		case 0: // linescroll
+			p_scroll_data = &m_videoram[scrollbank<<12] + (m_lsram_page[layer][1]>>1);
+			line_height = 1;
+			sdat_wrapmask = 0x3ff;
+			sdat_adv = 2;
+		break;
+		case 2: // rowscroll
+			p_scroll_data = &m_videoram[scrollbank << 12] + (m_lsram_page[layer][1] >> 1);
+			line_height = 8;
+			sdat_wrapmask = 0x3ff;
+			sdat_adv = 16;
+		break;
+		default: // xyscroll
+			p_scroll_data = ram16;
+			line_height = K056832_PAGE_HEIGHT;
+			sdat_wrapmask = 0;
+			sdat_adv = 0;
+			ram16[0] = 0;
+			ram16[1] = BURN_ENDIAN_SWAP_INT16(dx);
+	}
+	if (flipy)
+		sdat_adv = -sdat_adv;
+
+	last_active = m_active_layer;
+
+	for (r = 0; r < rowspan; r++)
+	{
+		if (rowspan > 1)
+		{
+			sy = ay;
+			ty = r * K056832_PAGE_HEIGHT;
+
+			if (!flipy)
+			{
+				// handle bottom-edge wraparoundness and cull off-screen tilemaps
+				if ((r == 0) && (sy > height - K056832_PAGE_HEIGHT)) sy -= height;
+				if ((sy + K056832_PAGE_HEIGHT <= ty) || (sy - K056832_PAGE_HEIGHT >= ty)) continue;
+
+				// switch frame of reference and clip y
+				if ((ty -= sy) >= 0)
+				{
+					cliph = K056832_PAGE_HEIGHT - ty;
+					clipy = line_starty = ty;
+					line_endy = K056832_PAGE_HEIGHT;
+					sdat_start = 0;
+				}
+				else
+				{
+					cliph = K056832_PAGE_HEIGHT + ty;
+					ty = -ty;
+					clipy = line_starty = 0;
+					line_endy = cliph;
+					sdat_start = ty;
+					if (scrollmode == 2) { sdat_start &= ~7; line_starty -= ty & 7; }
+				}
+			}
+			else
+			{
+				ty += K056832_PAGE_HEIGHT;
+
+				// handle top-edge wraparoundness and cull off-screen tilemaps
+				if ((r == rowspan - 1) && (sy < K056832_PAGE_HEIGHT)) sy += height;
+				if ((sy + K056832_PAGE_HEIGHT <= ty) || (sy - K056832_PAGE_HEIGHT >= ty)) continue;
+
+				// switch frame of reference and clip y
+				if ((ty -= sy) <= 0)
+				{
+					cliph = K056832_PAGE_HEIGHT + ty;
+					clipy = line_starty = -ty;
+					line_endy = K056832_PAGE_HEIGHT;
+					sdat_start = K056832_PAGE_HEIGHT - 1;
+					if (scrollmode == 2) sdat_start &= ~7;
+				}
+				else
+				{
+					cliph = K056832_PAGE_HEIGHT - ty;
+					clipy = line_starty = 0;
+					line_endy = cliph;
+					sdat_start = cliph - 1;
+					if (scrollmode == 2)
+					{
+						sdat_start &= ~7;
+						line_starty -= ty & 7;
+					}
+				}
+			}
+		}
+		else
+		{
+			cliph = line_endy = K056832_PAGE_HEIGHT;
+			clipy = line_starty = 0;
+
+			if (!flipy)
+				sdat_start = dy;
+			else
+				/*
+				    doesn't work with Metamorphic Force and Martial Champion (software Y-flipped) but
+				    LE2U (naturally Y-flipped) seems to expect this condition as an override.
+
+				    sdat_start = K056832_PAGE_HEIGHT-1 -dy;
+				*/
+			sdat_start = K056832_PAGE_HEIGHT - 1;
+
+			if (scrollmode == 2) {
+				if (K056832_metamorphic_textfix) sdat_start = dy - 8; // fix for Metamorphic Force "Break the Statue"
+				sdat_start &= ~7;
+				line_starty -= dy & 7;
+			}
+		}
+
+		sdat_start += r * K056832_PAGE_HEIGHT;
+		sdat_start <<= 1;
+
+		clipmaxy = clipy + cliph - 1;
+
+		for (c = 0; c < colspan; c++)
+		{
+			pageIndex = (((rowstart + r) & 3) << 2) + ((colstart + c) & 3);
+
+			if (m_layer_association)
+			{
+				if (m_layer_assoc_with_page[pageIndex] != layer) {
+					continue;
+				}
+			}
+			else
+			{
+				if (m_layer_assoc_with_page[pageIndex] == -1) {
+					continue;
+				}
+
+				m_active_layer = layer;
+			}
+
+			if (K055555_enabled == 0)       // are we using k055555 palette?
+			{
+				if (!pageIndex)
+					m_active_layer = 0;
+			}
+
+			if (update_linemap(layer, pageIndex, flags, priority)) // for gijoe
+				continue;
+
+			INT32 is_linemap = (!m_page_tile_mode[pageIndex] && K056832_Linemap_Enabled);
+
+//			if (!m_page_tile_mode[pageIndex]) continue; // this was hidden in update_linemap()
+
+			tmap = pageIndex;
+
+			tmap_scrolly = ay;
+
+			last_dx = 0x100000;
+			last_visible = 0;
+
+			for (sdat_walk = sdat_start, line_y = line_starty; line_y < line_endy; sdat_walk += sdat_adv, line_y += line_height)
+			{
+				dminy = line_y;
+				dmaxy = line_y + line_height - 1;
+
+				if (dminy < clipy) dminy = clipy;
+				if (dmaxy > clipmaxy) dmaxy = clipmaxy;
+				if (dminy > cmaxy || dmaxy < cminy) continue;
+
+				sdat_offs = sdat_walk & sdat_wrapmask;
+
+				clip_data[2] = (dminy < cminy ) ? cminy : dminy;
+				clip_data[3] = (dmaxy > cmaxy ) ? cmaxy : dmaxy;
+
+				if ((scrollmode == 2) && (flags & K056832_DRAW_FLAG_MIRROR) && (flipy))
+					dx = ((INT32)BURN_ENDIAN_SWAP_INT16(p_scroll_data[sdat_offs + 0x1e0 + 14])<<16 | (INT32)BURN_ENDIAN_SWAP_INT16(p_scroll_data[sdat_offs + 0x1e0 + 15])) + corr;
+				else
+					dx = ((INT32)BURN_ENDIAN_SWAP_INT16(p_scroll_data[sdat_offs])<<16 | (INT32)BURN_ENDIAN_SWAP_INT16(p_scroll_data[sdat_offs + 1])) + corr;
+
+				if ((INT32)last_dx == dx) { if (last_visible) draw_layer_internal(layer, tmap, clip_data, tmap_scrollx, tmap_scrolly, flags, priority, is_linemap); continue; }
+				last_dx = dx;
+
+				if (colspan > 1)
+				{
+					//sx = (UINT32)dx % width;
+					sx = (UINT32)dx & (width-1);
+
+					//tx = c * K056832_PAGE_WIDTH;
+					tx = c << 9;
+
+					if (!flipx)
+					{
+						// handle right-edge wraparoundness and cull off-screen tilemaps
+						if ((c == 0) && (sx > width - K056832_PAGE_WIDTH)) sx -= width;
+						if ((sx + K056832_PAGE_WIDTH <= tx) || (sx - K056832_PAGE_WIDTH >= tx))
+							{ last_visible = 0; continue; }
+
+						// switch frame of reference and clip x
+						if ((tx -= sx) <= 0) { clipw = K056832_PAGE_WIDTH + tx; clipx = 0; }
+						else { clipw = K056832_PAGE_WIDTH - tx; clipx = tx; }
+					}
+					else
+					{
+						tx += K056832_PAGE_WIDTH;
+
+						// handle left-edge wraparoundness and cull off-screen tilemaps
+						if ((c == colspan-1) && (sx < K056832_PAGE_WIDTH)) sx += width;
+						if ((sx + K056832_PAGE_WIDTH <= tx) || (sx - K056832_PAGE_WIDTH >= tx))
+							{ last_visible = 0; continue; }
+
+						// switch frame of reference and clip y
+						if ((tx -= sx) >= 0) { clipw = K056832_PAGE_WIDTH - tx; clipx = 0; }
+						else { clipw = K056832_PAGE_WIDTH + tx; clipx = -tx; }
+					}
+				}
+				else { clipw = K056832_PAGE_WIDTH; clipx = 0; }
+
+				last_visible = 1;
+
+				dminx = clipx;
+				dmaxx = clipx + clipw - 1;
+
+				clip_data[0] = (dminx < cminx ) ? cminx : dminx;
+				clip_data[1] = (dmaxx > cmaxx ) ? cmaxx : dmaxx;
+
+				// soccer superstars visible area is >512 pixels, this causes problems with the logic because
+				// the tilemaps are 512 pixels across.  Assume that if the limits were set as below that we
+				// want the tilemap to be drawn on the right hand side..  this is probably not the correct
+				// logic, but it works.
+				if ((clip_data[0]>0) && (clip_data[1]==511))
+					clip_data[1]=cmaxx;
+
+				tmap_scrollx = dx;
+
+				draw_layer_internal(layer, tmap, clip_data, tmap_scrollx, tmap_scrolly, flags, priority, is_linemap);
+			}
+		}
+	}
+
+	m_active_layer = last_active;
+}
+
+int K056832GetLayerAssociation()
+{
+	return m_layer_association;
+}
+
+int K056832GetActiveLayer()
+{
+	return m_active_layer;
+}
+
+void K056832Metamorphic_Fixup()
+{ // Metmorphic Force (metamrph)'s scroll data has a different offset.  Notably, this fixes the jumbled up "Break the Statue" text. (for those familiar with the game)
+	K056832_metamorphic_textfix = 1;
+}
+
+// some of these this may not be necessary to save...
+void K056832Scan(INT32 nAction)
+{
+	struct BurnArea ba;
+	
+	if (nAction & ACB_MEMORY_RAM) {
+		memset(&ba, 0, sizeof(ba));
+		ba.Data	  = (UINT8*)K056832VideoRAM;
+		ba.nLen	  = 0x2000 * 0x11 * 2;
+		ba.szName = "K056832 Video RAM";
+		BurnAcb(&ba);
+	}
+
+	if (nAction & ACB_DRIVER_DATA) {
+		SCAN_VAR(k056832Regs);
+		SCAN_VAR(k056832Regsb);
+
+		SCAN_VAR(m_layer_assoc_with_page);
+
+		SCAN_VAR(m_use_ext_linescroll);
+		SCAN_VAR(m_layer_association);
+		SCAN_VAR(m_active_layer);
+		SCAN_VAR(m_layer_assoc_with_page);
+		SCAN_VAR(m_selected_page);
+		SCAN_VAR(m_selected_page_x4096);
+		SCAN_VAR(m_lsram_page);
+		SCAN_VAR(m_default_layer_association);
+		SCAN_VAR(m_uses_tile_banks);
+		SCAN_VAR(m_cur_tile_bank);
+		SCAN_VAR(m_layer_tile_mode);
+		SCAN_VAR(m_page_tile_mode);
+		SCAN_VAR(K056832AlphaTileMode);
+		SCAN_VAR(K056832LastAlphaTileMixCode);
+
+		SCAN_VAR(m_cur_gfx_banks);
+		SCAN_VAR(tilemap_flip);
+		SCAN_VAR(m_rom_half);
+	}
+}
