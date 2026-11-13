@@ -2,20 +2,27 @@
 // Created by cpasjuste on 28/09/23.
 //
 
+#include <algorithm>
 #include "skeleton/pemu.h"
 #include "pfbneo_romlist.h"
 #include "pfbneo_utility.h"
+#include "burner.h"
 
 using namespace c2d;
 using namespace pemu;
 
 void PFBNRomList::build(const ss_api::GameList::GameAddedCb &cb) {
     float time_start = ui->getElapsedTime().asSeconds();
+    std::vector<std::string> biosList;
 
     // build rom list
-    RomList::build([this](Game *game) {
+    RomList::build([this, &biosList](Game *game) {
         auto cfgSys = game->system;
         PFBNEOUtility::GameInfo gameInfo = PFBNEOUtility::getGameInfo(*game);
+        // remember bios/board roms (neogeo.zip, pgm.zip, skns.zip...) to hide them from the list
+        if (!gameInfo.name.empty() && (BurnDrvGetFlags() & BDF_BOARDROM)) {
+            biosList.push_back(game->path);
+        }
 #if 0
         printf("game: %s, path: %s, fbneo system: %s (0x%08x), core system: %s (0x%08x)\n",
                game->path.c_str(), game->romsPath.c_str(),
@@ -63,6 +70,15 @@ void PFBNRomList::build(const ss_api::GameList::GameAddedCb &cb) {
             game->cloneOf = gameInfo.parent + ".zip";
         }
     });
+
+    // hide bios/board roms from the list (files stay, games still use them)
+    if (!biosList.empty()) {
+        auto &games = gameList->games;
+        games.erase(std::remove_if(games.begin(), games.end(), [&biosList](const Game &g) {
+            return std::find(biosList.begin(), biosList.end(), g.path) != biosList.end();
+        }), games.end());
+        printf("PFBNRomList::build: hidden %zu bios roms\n", biosList.size());
+    }
 
     printf("PFBNRomList::build: removing HARDWARE_PREFIX_ARCADE...\n");
     // remove custom "ARCADE" system added from "RomList::build"
